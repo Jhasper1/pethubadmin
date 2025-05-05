@@ -498,23 +498,44 @@ func ApproveShelterRegStatus(c *fiber.Ctx) error {
 	// Get shelter_id from the URL
 	shelterID := c.Params("id")
 
-	// Update the shelter's reg_status to "approved" only if it is currently "pending"
+	// Fetch the shelter to check its current status
+	var shelter models.ShelterAccount
+	if err := middleware.DBConn.Where("shelter_id = ?", shelterID).First(&shelter).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"message": "Shelter not found",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Database error",
+			"error":   err.Error(),
+		})
+	}
+
+	// Check if the shelter is already approved
+	if shelter.RegStatus == "approved" {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"message": "Shelter is already approved",
+		})
+	}
+
+	// Check if the shelter is pending
+	if shelter.RegStatus != "pending" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Shelter registration is not pending",
+		})
+	}
+
+	// Update the shelter's reg_status to "approved"
 	result := middleware.DBConn.Model(&models.ShelterAccount{}).
-		Where("shelter_id = ? AND reg_status = ?", shelterID, "pending").
+		Where("shelter_id = ?", shelterID).
 		Update("reg_status", "approved")
 
-	// Check for errors
+	// Check for errors during the update
 	if result.Error != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to approve shelter registration",
 			"error":   result.Error.Error(),
-		})
-	}
-
-	// Check if any rows were affected (i.e., if the shelter was found and updated)
-	if result.RowsAffected == 0 {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"message": "Shelter not found or already approved",
 		})
 	}
 
@@ -569,5 +590,113 @@ func GetAllSheltersByID(c *fiber.Ctx) error {
 		"data": fiber.Map{
 			"info": ShelterInfo,
 		},
+	})
+}
+
+func CountActiveShelters(c *fiber.Ctx) error {
+	var count int64
+
+	// Count shelters with status = "active"
+	if err := middleware.DBConn.Model(&models.ShelterAccount{}).
+		Where("status = ?", "active").
+		Count(&count).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to count active shelters",
+			"error":   err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "Active shelters counted successfully",
+		"count":   count,
+	})
+}
+
+func CountAdopters(c *fiber.Ctx) error {
+	var count int64
+
+	// Count all adopters
+	if err := middleware.DBConn.Model(&models.AdopterAccount{}).Count(&count).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to count adopters",
+			"error":   err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "Adopters counted successfully",
+		"count":   count,
+	})
+}
+
+func CountPets(c *fiber.Ctx) error {
+	var count int64
+
+	// Count all pets
+	if err := middleware.DBConn.Model(&models.PetInfo{}).Count(&count).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to count pets",
+			"error":   err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "Pets counted successfully",
+		"count":   count,
+	})
+}
+
+func CountPendingShelters(c *fiber.Ctx) error {
+	var count int64
+
+	if err := middleware.DBConn.Model(&models.ShelterAccount{}).
+		Where("reg_status = ?", "pending").
+		Count(&count).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to count pending shelters",
+			"error":   err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "Pendingx shelters counted successfully",
+		"count":   count,
+	})
+}
+
+func CountApprovedShelters(c *fiber.Ctx) error {
+	var count int64
+
+	if err := middleware.DBConn.Model(&models.ShelterAccount{}).
+		Where("reg_status = ?", "approved").
+		Count(&count).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to count approve shelters",
+			"error":   err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "Pendingx shelters counted successfully",
+		"count":   count,
+	})
+}
+
+func CountAdoptedPets(c *fiber.Ctx) error {
+	var count int64
+
+	// Count pets where adoption_status is "adopted"
+	if err := middleware.DBConn.Model(&models.PetInfo{}).
+		Where("status = ?", "adopted").
+		Count(&count).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to count adopted pets",
+			"error":   err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "Adopted pets counted successfully",
+		"count":   count,
 	})
 }

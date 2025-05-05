@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"pethubadmin/models"
 	"pethubadmin/models/response"
+
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -94,36 +94,4 @@ func JWTMiddleware() fiber.Handler {
 		c.Locals("id", token.Claims.(jwt.MapClaims)["id"])
 		return c.Next()
 	}
-}
-
-func GetAllShelterUserHomeScreen(c *fiber.Ctx) error {
-	// Define a struct to include shelter info and media fields
-	type ShelterWithMedia struct {
-		models.ShelterInfo
-		ShelterProfile *string `json:"shelter_profile"`
-		ShelterCover   *string `json:"shelter_cover"`
-	}
-
-	// Create a slice to store all shelters with their media
-	var shelters []ShelterWithMedia
-
-	// Fetch all shelters and their media from the database
-	result := DBConn.Table("shelterinfo").
-		Select("shelterinfo.*, sheltermedia.shelter_profile, sheltermedia.shelter_cover").
-		Joins("LEFT JOIN sheltermedia ON shelterinfo.shelter_id = sheltermedia.shelter_id").
-		Find(&shelters)
-
-	// Handle errors
-	if result.Error != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"message": "Error retrieving shelter data",
-			"error":   result.Error.Error(),
-		})
-	}
-
-	// Return the list of shelters with their media
-	return c.JSON(fiber.Map{
-		"message": "Shelters retrieved successfully",
-		"data":    shelters,
-	})
 }

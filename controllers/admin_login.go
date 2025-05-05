@@ -4,7 +4,6 @@ import (
 	"errors"
 	"pethubadmin/middleware"
 	"pethubadmin/models"
-	"pethubadmin/models/response"
 
 	"github.com/gofiber/fiber/v2"
 	"golang.org/x/crypto/bcrypt"
@@ -49,21 +48,22 @@ func LoginAdmin(c *fiber.Ctx) error {
 		})
 	}
 
+	// Generate JWT token
 	token, err := middleware.GenerateJWT(adminAccount.AdminID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(response.ResponseModel{
-			RetCode: "500",
-			Message: "Error generating token",
-			Data:    err.Error(),
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Error generating token",
+			"error":   err.Error(),
 		})
 	}
 
-	// Login successful, return adopter account and info
+	// Login successful, return admin account and token
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"message": "Login successful",
 		"data": fiber.Map{
-			"admin": adminAccount,
-			"token": token,
+			"token":    token,
+			"admin_id": adminAccount.AdminID, // Include admin ID in the response
+			"admin":    adminAccount,
 		},
 	})
 }
