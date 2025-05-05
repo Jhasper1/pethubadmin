@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 class SheltersContent extends StatefulWidget {
   const SheltersContent({Key? key}) : super(key: key);
@@ -15,7 +16,8 @@ class _SheltersContentState extends State<SheltersContent> {
   bool isLoading = true;
   String errorMessage = '';
   bool showApproved = false;
-  int currentIndex = 0;
+  int _rowsPerPage = 10;
+  int _currentPage = 0;
 
   @override
   void initState() {
@@ -24,27 +26,47 @@ class _SheltersContentState extends State<SheltersContent> {
   }
 
   Future<void> _fetchShelters() async {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString('auth_token');
+
+    if (token == null || token.isEmpty) {
+      throw Exception('No authentication token found');
+    }
+
     setState(() {
       isLoading = true;
       errorMessage = '';
     });
 
+    final url = 'http://127.0.0.1:5566/api/admin/getallshelterstry';
+    final headers = {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer $token",
+    };
+
     try {
-      final response = await http.get(
-        Uri.parse('http://127.0.0.1:5566/admin/getallshelterstry'),
-        headers: {'Content-Type': 'application/json'},
-      );
+      final response = await http.get(Uri.parse(url), headers: headers).timeout(
+            const Duration(seconds: 10),
+          );
 
-      final responseData = json.decode(response.body);
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+        debugPrint("API Response: $responseData");
 
-      if (response.statusCode == 200 && responseData['retCode'] == '200') {
-        final shelters = responseData['data'] as List;
-        _categorizeShelters(shelters);
+        if (responseData['retCode'] == '200') {
+          final shelters = responseData['data'] as List;
+          _categorizeShelters(shelters);
+        } else if (responseData['retCode'] == '401') {
+          _handleUnauthorized();
+        } else {
+          throw Exception(
+              'Failed to load shelters. Message: ${responseData['message'] ?? 'Unknown error'}');
+        }
       } else {
-        throw Exception(
-            'Failed to load shelters. Status: ${response.statusCode}, Message: ${responseData['message']}');
+        throw Exception('Failed to fetch data: ${response.statusCode}');
       }
     } catch (e) {
+      debugPrint('Error fetching shelters: $e');
       setState(() {
         errorMessage = 'Error: ${e.toString()}';
       });
@@ -57,13 +79,21 @@ class _SheltersContentState extends State<SheltersContent> {
     }
   }
 
+  void _handleUnauthorized() {
+    setState(() {
+      errorMessage = 'Session expired. Please log in again.';
+    });
+    Future.delayed(const Duration(seconds: 2), () {
+      Navigator.pushReplacementNamed(context, '/login');
+    });
+  }
+
   void _categorizeShelters(List<dynamic> shelters) {
     final List<dynamic> approved = [];
     final List<dynamic> pending = [];
 
     for (var shelter in shelters) {
-      final status = _getShelterStatus(shelter);
-      if (status == 'approved') {
+      if (_isShelterApproved(shelter)) {
         approved.add(shelter);
       } else {
         pending.add(shelter);
@@ -73,25 +103,26 @@ class _SheltersContentState extends State<SheltersContent> {
     setState(() {
       approvedShelters = approved;
       pendingShelters = pending;
-      currentIndex = pending.isNotEmpty ? 0 : -1;
     });
   }
 
-  String _getShelterStatus(dynamic shelter) {
-    return (shelter['reg_status'] ??
-        shelter['shelter']?['reg_status'] ??
-        shelter['shelter_id']?['reg_status'] ??
-        'pending')
+  bool _isShelterApproved(dynamic shelter) {
+    final status = (shelter['reg_status'] ??
+            shelter['shelter']?['reg_status'] ??
+            shelter['shelter_id']?['reg_status'] ??
+            'pending')
         .toString()
         .toLowerCase();
+    return status == 'approved';
   }
 
-  // Update to correctly fetch shelter_id
   int? _extractShelterId(dynamic shelterData) {
     if (shelterData['shelter_id'] is int) return shelterData['shelter_id'];
-    if (shelterData['shelter'] is Map && shelterData['shelter']['shelter_id'] is int) {
+    if (shelterData['shelter'] is Map &&
+        shelterData['shelter']['shelter_id'] is int) {
       return shelterData['shelter']['shelter_id'];
     }
+    if (shelterData['id'] is int) return shelterData['id'];
     return null;
   }
 
@@ -100,29 +131,40 @@ class _SheltersContentState extends State<SheltersContent> {
       final shelterId = _extractShelterId(shelterData);
       if (shelterId == null) throw Exception('Invalid shelter ID');
 
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('auth_token');
+      if (token == null) throw Exception('No authentication token found');
+
       debugPrint('Approving shelter ID: $shelterId');
 
       final response = await http.put(
-        Uri.parse('http://127.0.0.1:5566/admin/shelters/$shelterId/approve'),
-        headers: {'Content-Type': 'application/json'},
-      );
+        Uri.parse(
+            'http://127.0.0.1:5566/api/admin/shelters/$shelterId/approve'),
+        headers: {
+          'Content-Type': 'application/json',
+          "Authorization": "Bearer $token",
+        },
+      ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         _handleApprovalSuccess(shelterData, shelterId);
         _showSuccessMessage('Shelter approved successfully!');
-        Navigator.of(context).pop(); // Close the dialog
+        Navigator.of(context).pop();
       } else {
         final error = json.decode(response.body);
-        throw Exception(error['message'] ?? 'Approval failed with status ${response.statusCode}');
+        throw Exception(error['message'] ??
+            'Approval failed with status ${response.statusCode}');
       }
     } catch (e) {
-      debugPrint('Approval error: $e');
-      _showErrorMessage('Error: ${e.toString()}');
+      debugPrint('Error in _approveShelter: $e');
+      _showErrorMessage(
+          'Failed to approve: ${e.toString().replaceAll('Exception: ', '')}');
     }
   }
 
   void _handleApprovalSuccess(dynamic shelterData, int shelterId) {
-    final index = pendingShelters.indexWhere((s) => _extractShelterId(s) == shelterId);
+    final index =
+        pendingShelters.indexWhere((s) => _extractShelterId(s) == shelterId);
     if (index == -1) return;
 
     final approvedShelter = _updateShelterStatus(shelterData);
@@ -130,7 +172,6 @@ class _SheltersContentState extends State<SheltersContent> {
     setState(() {
       pendingShelters.removeAt(index);
       approvedShelters.add(approvedShelter);
-      currentIndex = pendingShelters.isEmpty ? -1 : (currentIndex % pendingShelters.length);
     });
   }
 
@@ -150,35 +191,49 @@ class _SheltersContentState extends State<SheltersContent> {
   void _showSuccessMessage(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.green),
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 3),
+      ),
     );
   }
 
   void _showErrorMessage(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.red),
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+        duration: const Duration(seconds: 3),
+      ),
     );
   }
 
   void _showShelterDialog(dynamic shelterData) {
     final info = shelterData['info'] ?? {};
-    final status = _getShelterStatus(shelterData);
+    final status = _isShelterApproved(shelterData) ? 'Approved' : 'Pending';
 
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Shelter Details (${status.toUpperCase()})'),
-        content: Container(
-          width: 700, // Adjust the width here (e.g., 300)
+        title: Text('Shelter Details ($status)'),
+        content: SizedBox(
+          width: MediaQuery.of(context).size.width * 0.7,
           child: SingleChildScrollView(
-            child: ListBody(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                _buildDetailRow(
+                    'ID', _extractShelterId(shelterData)?.toString() ?? 'N/A'),
                 _buildDetailRow('Name', info['shelter_name']),
                 _buildDetailRow('Address', info['shelter_address']),
                 _buildDetailRow('Contact', info['shelter_contact']),
                 _buildDetailRow('Email', info['shelter_email']),
                 _buildDetailRow('Status', status),
+                if (info['description'] != null)
+                  _buildDetailRow('Description', info['description']),
               ],
             ),
           ),
@@ -188,7 +243,7 @@ class _SheltersContentState extends State<SheltersContent> {
             onPressed: () => Navigator.pop(context),
             child: const Text('Close'),
           ),
-          if (status != 'approved')
+          if (!_isShelterApproved(shelterData))
             ElevatedButton(
               onPressed: () => _approveShelter(shelterData),
               child: const Text('Approve'),
@@ -196,102 +251,47 @@ class _SheltersContentState extends State<SheltersContent> {
         ],
       ),
     );
-
-
   }
 
   Widget _buildDetailRow(String label, String? value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('$label: ', style: const TextStyle(fontWeight: FontWeight.bold)),
-          Expanded(child: Text(value ?? 'N/A')),
+          SizedBox(
+            width: 100,
+            child: Text(
+              '$label:',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              value ?? 'Not provided',
+              softWrap: true,
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildShelterCard(dynamic shelterData, {bool isApproved = false}) {
-    final info = shelterData['info'] ?? {};
-    final status = _getShelterStatus(shelterData);
-
-    return Card(
-      elevation: 2,
-      margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-      child: InkWell(
-        onTap: () => _showShelterDialog(shelterData),
-        borderRadius: BorderRadius.circular(8),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    info['shelter_name'] ?? 'Unnamed Shelter',
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: status == 'approved' ? Colors.green[100] : Colors.orange[100],
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      status.toUpperCase(),
-                      style: TextStyle(
-                        color: status == 'approved' ? Colors.green[800] : Colors.orange[800],
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                info['shelter_address'] ?? 'No address provided',
-                style: TextStyle(color: Colors.grey[600]),
-              ),
-              if (info['shelter_contact'] != null) ...[
-                const SizedBox(height: 4),
-                Text(
-                  'Contact: ${info['shelter_contact']}',
-                  style: TextStyle(color: Colors.grey[600]),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _showPrevious() {
-    if (pendingShelters.isEmpty) return;
-    setState(() {
-      currentIndex = (currentIndex - 1 + pendingShelters.length) % pendingShelters.length;
-    });
-  }
-
-  void _showNext() {
-    if (pendingShelters.isEmpty) return;
-    setState(() {
-      currentIndex = (currentIndex + 1) % pendingShelters.length;
-    });
+  List<dynamic> _getPaginatedShelters() {
+    final shelters = showApproved ? approvedShelters : pendingShelters;
+    final startIndex = _currentPage * _rowsPerPage;
+    final endIndex = startIndex + _rowsPerPage;
+    return shelters.sublist(
+        startIndex, endIndex > shelters.length ? shelters.length : endIndex);
   }
 
   @override
   Widget build(BuildContext context) {
     if (isLoading) {
-      return const Center(child: CircularProgressIndicator());
+      return const Center(
+        child: CircularProgressIndicator(),
+      );
     }
 
     if (errorMessage.isNotEmpty) {
@@ -299,10 +299,18 @@ class _SheltersContentState extends State<SheltersContent> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(errorMessage, style: const TextStyle(color: Colors.red)),
-            const SizedBox(height: 16),
+            Text(
+              errorMessage,
+              style: const TextStyle(color: Colors.red, fontSize: 16),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
             ElevatedButton(
               onPressed: _fetchShelters,
+              style: ElevatedButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              ),
               child: const Text('Retry'),
             ),
           ],
@@ -310,84 +318,212 @@ class _SheltersContentState extends State<SheltersContent> {
       );
     }
 
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: ToggleButtons(
-            isSelected: [!showApproved, showApproved],
-            onPressed: (int index) {
-              setState(() {
-                showApproved = index == 1;
-                currentIndex = 0;
-              });
-            },
-            borderRadius: BorderRadius.circular(8),
-            selectedColor: Colors.white,
-            fillColor: Colors.blue,
-            color: Colors.blue,
-            constraints: const BoxConstraints(minHeight: 40, minWidth: 120),
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Text('Pending (${pendingShelters.length})'),
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Text('Approved (${approvedShelters.length})'),
-              ),
-            ],
+    final shelters = showApproved ? approvedShelters : pendingShelters;
+    final paginatedShelters = _getPaginatedShelters();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Shelter Management'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _fetchShelters,
+            tooltip: 'Refresh',
           ),
-        ),
-        Expanded(
-          child: showApproved
-              ? _buildApprovedList()
-              : _buildPendingCarousel(),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildApprovedList() {
-    if (approvedShelters.isEmpty) {
-      return const Center(child: Text('No approved shelters found.'));
-    }
-
-    return RefreshIndicator(
-      onRefresh: _fetchShelters,
-      child: ListView.builder(
-        padding: const EdgeInsets.only(bottom: 16),
-        itemCount: approvedShelters.length,
-        itemBuilder: (context, index) {
-          return _buildShelterCard(approvedShelters[index], isApproved: true);
-        },
+        ],
       ),
-    );
-  }
-
-  Widget _buildPendingCarousel() {
-    if (pendingShelters.isEmpty) {
-      return const Center(child: Text('No pending shelters found.'));
-    }
-
-    return RefreshIndicator(
-      onRefresh: _fetchShelters,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+      body: Column(
         children: [
-          _buildShelterCard(pendingShelters[currentIndex]),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              IconButton(
-                onPressed: _showPrevious,
-                icon: const Icon(Icons.arrow_left),
-              ),
-              IconButton(
-                onPressed: _showNext,
-                icon: const Icon(Icons.arrow_right),
-              ),
-            ],
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  showApproved
+                      ? 'Approved Shelters (${approvedShelters.length})'
+                      : 'Pending Shelters (${pendingShelters.length})',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                Row(
+                  children: [
+                    const Text('Show Approved'),
+                    Switch(
+                      value: showApproved,
+                      onChanged: (value) {
+                        setState(() {
+                          showApproved = value;
+                          _currentPage = 0;
+                        });
+                      },
+                      activeColor: Colors.blue,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Column(
+              children: [
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.vertical,
+                      child: DataTable(
+                        columns: const [
+                          DataColumn(
+                              label: Text('ID',
+                                  style:
+                                      TextStyle(fontWeight: FontWeight.bold))),
+                          DataColumn(
+                              label: Text('Name',
+                                  style:
+                                      TextStyle(fontWeight: FontWeight.bold))),
+                          DataColumn(
+                              label: Text('Contact',
+                                  style:
+                                      TextStyle(fontWeight: FontWeight.bold))),
+                          DataColumn(
+                              label: Text('Email',
+                                  style:
+                                      TextStyle(fontWeight: FontWeight.bold))),
+                          DataColumn(
+                              label: Text('Status',
+                                  style:
+                                      TextStyle(fontWeight: FontWeight.bold))),
+                          DataColumn(
+                              label: Text('Actions',
+                                  style:
+                                      TextStyle(fontWeight: FontWeight.bold))),
+                        ],
+                        rows: paginatedShelters.map((shelter) {
+                          final info = shelter['info'] ?? {};
+                          final shelterId =
+                              _extractShelterId(shelter)?.toString() ?? 'N/A';
+                          final status = _isShelterApproved(shelter)
+                              ? 'Approved'
+                              : 'Pending';
+
+                          return DataRow(
+                            cells: [
+                              DataCell(Text(shelterId)),
+                              DataCell(
+                                ConstrainedBox(
+                                  constraints:
+                                      const BoxConstraints(maxWidth: 150),
+                                  child: Text(
+                                    info['shelter_name'] ?? 'Unnamed Shelter',
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ),
+                              DataCell(Text(
+                                  info['shelter_contact'] ?? 'Not provided')),
+                              DataCell(Text(
+                                  info['shelter_email'] ?? 'Not provided')),
+                              DataCell(
+                                Chip(
+                                  label: Text(
+                                    status,
+                                    style: TextStyle(
+                                      color: status == 'Approved'
+                                          ? Colors.green
+                                          : Colors.orange,
+                                    ),
+                                  ),
+                                  backgroundColor: status == 'Approved'
+                                      ? Colors.green[50]
+                                      : Colors.orange[50],
+                                ),
+                              ),
+                              DataCell(
+                                Row(
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(Icons.visibility,
+                                          size: 20),
+                                      onPressed: () =>
+                                          _showShelterDialog(shelter),
+                                      tooltip: 'View Details',
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          );
+                        }).toList(),
+                        headingRowColor:
+                            MaterialStateProperty.resolveWith<Color>(
+                          (Set<MaterialState> states) => Colors.grey[200]!,
+                        ),
+                        dataRowHeight: 60,
+                        headingRowHeight: 50,
+                        horizontalMargin: 12,
+                        columnSpacing: 20,
+                        showCheckboxColumn: false,
+                      ),
+                    ),
+                  ),
+                ),
+                if (shelters.length > _rowsPerPage)
+                  Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        DropdownButton<int>(
+                          value: _rowsPerPage,
+                          items: [5, 10, 25, 50].map((int value) {
+                            return DropdownMenuItem<int>(
+                              value: value,
+                              child: Text('$value per page'),
+                            );
+                          }).toList(),
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() {
+                                _rowsPerPage = value;
+                                _currentPage = 0;
+                              });
+                            }
+                          },
+                        ),
+                        const SizedBox(width: 16),
+                        Text(
+                          '${_currentPage * _rowsPerPage + 1}-${(_currentPage + 1) * _rowsPerPage > shelters.length ? shelters.length : (_currentPage + 1) * _rowsPerPage} of ${shelters.length}',
+                        ),
+                        const SizedBox(width: 16),
+                        IconButton(
+                          icon: const Icon(Icons.chevron_left),
+                          onPressed: _currentPage > 0
+                              ? () {
+                                  setState(() {
+                                    _currentPage--;
+                                  });
+                                }
+                              : null,
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.chevron_right),
+                          onPressed: (_currentPage + 1) * _rowsPerPage <
+                                  shelters.length
+                              ? () {
+                                  setState(() {
+                                    _currentPage++;
+                                  });
+                                }
+                              : null,
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
           ),
         ],
       ),

@@ -19,6 +19,7 @@ class _DashboardContentState extends State<DashboardContent> {
   int pendingShelters = 0;
   bool isLoading = true;
   String errorMessage = '';
+  int touchedIndex = -1;
 
   @override
   void initState() {
@@ -88,57 +89,53 @@ class _DashboardContentState extends State<DashboardContent> {
             ),
           ),
           const SizedBox(height: 20),
-
           Row(
             children: [
-              Expanded(child: _buildStatCard('Shelters', shelterCount, Icons.home)),
+              Expanded(
+                  child: _buildStatCard('Shelters', shelterCount, Icons.home)),
               const SizedBox(width: 16),
-              Expanded(child: _buildStatCard('Adopters', adopterCount, Icons.people)),
+              Expanded(
+                  child:
+                      _buildStatCard('Adopters', adopterCount, Icons.people)),
               const SizedBox(width: 16),
               Expanded(child: _buildStatCard('Pets', petCount, Icons.pets)),
               const SizedBox(width: 16),
-              Expanded(child: _buildStatCard('Adopted Pets', adoptedPetCount, Icons.favorite)),
+              Expanded(
+                  child: _buildStatCard(
+                      'Adopted Pets', adoptedPetCount, Icons.favorite)),
             ],
           ),
           const SizedBox(height: 30),
-
           const Text(
             'Shelter Status',
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 10),
-
           if (shelterCount > 0)
             SizedBox(
               height: 300,
               child: PieChart(
                 PieChartData(
-                  sections: [
-                    PieChartSectionData(
-                      value: approvedShelters.toDouble(),
-                      color: Colors.green,
-                      title:
-                      '${((approvedShelters / shelterCount) * 100).toStringAsFixed(1)}%',
-                      radius: 60,
-                      titleStyle: const TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.bold),
-                    ),
-                    PieChartSectionData(
-                      value: pendingShelters.toDouble(),
-                      color: Colors.orange,
-                      title:
-                      '${((pendingShelters / shelterCount) * 100).toStringAsFixed(1)}%',
-                      radius: 60,
-                      titleStyle: const TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.bold),
-                    ),
-                  ],
+                  sections: _buildPieSections(),
                   sectionsSpace: 2,
                   centerSpaceRadius: 60,
+                  pieTouchData: PieTouchData(
+                    touchCallback: (FlTouchEvent event, pieTouchResponse) {
+                      setState(() {
+                        if (!event.isInterestedForInteractions ||
+                            pieTouchResponse == null ||
+                            pieTouchResponse.touchedSection == null) {
+                          touchedIndex = -1;
+                        } else {
+                          touchedIndex = pieTouchResponse
+                              .touchedSection!.touchedSectionIndex;
+                        }
+                      });
+                    },
+                  ),
                 ),
               ),
             ),
-
           if (shelterCount > 0)
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -153,13 +150,44 @@ class _DashboardContentState extends State<DashboardContent> {
     );
   }
 
+  List<PieChartSectionData> _buildPieSections() {
+    return List.generate(2, (index) {
+      final isTouched = index == touchedIndex;
+      final radius = isTouched ? 70.0 : 60.0;
+
+      if (index == 0) {
+        return PieChartSectionData(
+          value: approvedShelters.toDouble(),
+          color: Colors.green,
+          title: isTouched
+              ? '$approvedShelters shelters'
+              : '${((approvedShelters / shelterCount) * 100).toStringAsFixed(1)}%',
+          radius: radius,
+          titleStyle:
+              const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        );
+      } else {
+        return PieChartSectionData(
+          value: pendingShelters.toDouble(),
+          color: Colors.orange,
+          title: isTouched
+              ? '$pendingShelters shelters'
+              : '${((pendingShelters / shelterCount) * 100).toStringAsFixed(1)}%',
+          radius: radius,
+          titleStyle:
+              const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        );
+      }
+    });
+  }
+
   Widget _buildStatCard(String title, int count, IconData icon) {
     return Card(
       elevation: 4,
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start, // Align everything to the left
+          crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
@@ -186,8 +214,6 @@ class _DashboardContentState extends State<DashboardContent> {
       ),
     );
   }
-
-
 
   Widget _buildLegendItem(String text, Color color) {
     return Row(

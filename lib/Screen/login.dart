@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:admin/Screen/dashboard.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class AdminLoginScreen extends StatefulWidget {
   const AdminLoginScreen({super.key});
@@ -38,19 +39,51 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
       );
 
       final responseData = json.decode(response.body);
+      debugPrint('Full API Response: $responseData'); // Log the full response
 
       if (response.statusCode == 200) {
-        // Navigate to the dashboard directly (token usage removed)
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const DashboardScreen()),
-        );
+        if (responseData['data'] != null &&
+            responseData['data']['token'] != null) {
+          final token = responseData['data']['token'];
+          debugPrint('Generated Token: $token');
+
+          // Save the token to SharedPreferences
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('auth_token', token);
+
+          // Show the token in a dialog
+          showDialog(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('Login Successful'),
+              content: Text('Generated Token: $token'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          );
+
+          // Navigate to the dashboard
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const DashboardScreen()),
+          );
+        } else {
+          debugPrint('Token not found in the response');
+          setState(() {
+            _errorMessage = responseData['message'] ?? 'Login failed';
+          });
+        }
       } else {
         setState(() {
           _errorMessage = responseData['message'] ?? 'Login failed';
         });
       }
     } catch (e) {
+      debugPrint('Error: $e');
       setState(() {
         _errorMessage = 'Connection error. Please try again.';
       });
@@ -125,7 +158,8 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                       children: [
                         Container(
                           width: 400,
-                          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 48),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 32, vertical: 48),
                           decoration: BoxDecoration(
                             color: Colors.white,
                             borderRadius: BorderRadius.circular(16),
@@ -167,14 +201,16 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                                   controller: _usernameController,
                                   decoration: InputDecoration(
                                     labelText: 'Username',
-                                    labelStyle: const TextStyle(color: Colors.black54),
+                                    labelStyle:
+                                        const TextStyle(color: Colors.black54),
                                     filled: true,
                                     fillColor: Colors.grey[100],
                                     border: OutlineInputBorder(
                                       borderRadius: BorderRadius.circular(8),
                                       borderSide: BorderSide.none,
                                     ),
-                                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                    contentPadding: const EdgeInsets.symmetric(
+                                        horizontal: 16, vertical: 14),
                                   ),
                                   validator: (value) {
                                     if (value == null || value.isEmpty) {
@@ -188,14 +224,16 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                                   controller: _passwordController,
                                   decoration: InputDecoration(
                                     labelText: 'Password',
-                                    labelStyle: const TextStyle(color: Colors.black54),
+                                    labelStyle:
+                                        const TextStyle(color: Colors.black54),
                                     filled: true,
                                     fillColor: Colors.grey[100],
                                     border: OutlineInputBorder(
                                       borderRadius: BorderRadius.circular(8),
                                       borderSide: BorderSide.none,
                                     ),
-                                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                    contentPadding: const EdgeInsets.symmetric(
+                                        horizontal: 16, vertical: 14),
                                   ),
                                   obscureText: true,
                                   validator: (value) {
@@ -233,21 +271,21 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                                     ),
                                     child: _isLoading
                                         ? const SizedBox(
-                                      width: 20,
-                                      height: 20,
-                                      child: CircularProgressIndicator(
-                                        color: Colors.white,
-                                        strokeWidth: 2,
-                                      ),
-                                    )
+                                            width: 20,
+                                            height: 20,
+                                            child: CircularProgressIndicator(
+                                              color: Colors.white,
+                                              strokeWidth: 2,
+                                            ),
+                                          )
                                         : const Text(
-                                      'Sign In',
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w600,
-                                        color: Colors.white,
-                                      ),
-                                    ),
+                                            'Sign In',
+                                            style: TextStyle(
+                                              fontSize: 16,
+                                              fontWeight: FontWeight.w600,
+                                              color: Colors.white,
+                                            ),
+                                          ),
                                   ),
                                 ),
                               ],

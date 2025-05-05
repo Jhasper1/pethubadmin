@@ -3,6 +3,10 @@ import 'dashboard_content.dart';
 import 'shelters_content.dart';
 import 'adopters_content.dart';
 import 'settings_content.dart';
+// Import new screens as needed
+// import 'pending_shelter_approvals.dart';
+// import 'reported_users.dart';
+// import 'blocked_users.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -19,11 +23,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _getSelectedContent() {
     switch (_selectedItem) {
-      case 'Shelters':
+      case 'Pending Shelter Approvals':
+        return const Center(child: Text('Pending Shelter Approvals Page'));
+      case 'All Shelter Accounts':
         return const SheltersContent();
-      case 'Adopters':
+      case 'Adopters List':
         return const AdoptersPage();
-      case 'Settings':
+      case 'Reported Users':
+        return const Center(child: Text('Reported Users Page'));
+      case 'Blocked Users':
+        return const Center(child: Text('Blocked Users Page'));
+      case 'Admin Profile':
         return const SettingsContent();
       default:
         return const DashboardContent();
@@ -42,9 +52,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             onExit: (_) => setState(() => _isHovered = false),
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 200),
-              width: _isHovered ? 200 : 60,
+              width: _isHovered ? 220 : 60,
               height: double.infinity,
-              color: Color(0xff0d0d27),
+              color: const Color(0xff0d0d27),
               child: Stack(
                 children: [
                   Column(
@@ -55,7 +65,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         padding: const EdgeInsets.all(10),
                         child: Row(
                           children: [
-                            const Icon(Icons.pets, color: Colors.white, size: 30),
+                            const Icon(Icons.pets,
+                                color: Colors.white, size: 30),
                             if (_isHovered)
                               const Padding(
                                 padding: EdgeInsets.only(left: 10),
@@ -79,9 +90,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           padding: EdgeInsets.zero,
                           children: [
                             _buildMenuItem('Dashboard', Icons.dashboard),
-                            _buildMenuItem('Shelters', Icons.home_work),
-                            _buildMenuItem('Adopters', Icons.people),
-                            _buildMenuItem('Settings', Icons.settings),
+                            _buildMenuItem('Pending Shelter Approvals',
+                                Icons.pending_actions),
+                            _buildMenuItem(
+                                'All Shelter Accounts', Icons.home_work),
+                            _buildMenuItem('Adopters List', Icons.people),
+                            _buildMenuItem('Reported Users', Icons.report),
+                            _buildMenuItem('Blocked Users', Icons.block),
+                            _buildMenuItem('Admin Profile', Icons.settings),
                           ],
                         ),
                       ),
@@ -94,7 +110,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     left: 0,
                     right: 0,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 10),
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 10, horizontal: 10),
                       decoration: const BoxDecoration(
                         border: Border(top: BorderSide(color: Colors.white54)),
                       ),
@@ -103,7 +120,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           const CircleAvatar(
                             radius: 15,
                             backgroundColor: Colors.white,
-                            child: Icon(Icons.person, size: 18, color: Colors.blue),
+                            child: Icon(Icons.person,
+                                size: 18, color: Colors.blue),
                           ),
                           if (_isHovered)
                             Padding(
@@ -145,7 +163,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           });
         },
         child: Container(
-          color: isSelected ? Color(0xff3b3b40) : Colors.transparent,
+          color: isSelected ? const Color(0xff3b3b40) : Colors.transparent,
           padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
           child: Row(
             children: [
