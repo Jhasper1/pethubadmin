@@ -700,3 +700,116 @@ func CountAdoptedPets(c *fiber.Ctx) error {
 		"count":   count,
 	})
 }
+
+func GetInactiveAdopters(c *fiber.Ctx) error {
+	var inactiveAdopters []models.AdopterAccount
+
+	// Fetch adopter accounts with status = "inactive"
+	if err := middleware.DBConn.
+		Where("status = ?", "inactive").
+		Find(&inactiveAdopters).
+		Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch inactive adopter accounts",
+			"error":   err.Error(),
+		})
+	}
+
+	// Fetch corresponding adopter info
+	var adopterInfos []models.AdopterInfo
+	if err := middleware.DBConn.
+		Where("adopter_id IN ?", getAdopterIDs(inactiveAdopters)).
+		Find(&adopterInfos).
+		Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch adopter info",
+			"error":   err.Error(),
+		})
+	}
+
+	// Map adopter info by AdopterID for easy lookup
+	infoMap := make(map[uint]models.AdopterInfo)
+	for _, info := range adopterInfos {
+		infoMap[info.AdopterID] = info
+	}
+
+	// Combine adopter accounts with their info
+	var combined []fiber.Map
+	for _, adopter := range inactiveAdopters {
+		if info, ok := infoMap[adopter.AdopterID]; ok {
+			combined = append(combined, fiber.Map{
+				"adopter": adopter,
+				"info":    info,
+			})
+		}
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "Inactive adopters retrieved successfully",
+		"data":    combined,
+	})
+}
+
+// Helper function to extract AdopterIDs from AdopterAccount slice
+func getAdopterIDs(adopters []models.AdopterAccount) []uint {
+	var ids []uint
+	for _, adopter := range adopters {
+		ids = append(ids, adopter.AdopterID)
+	}
+	return ids
+}
+func ActivateAdopter(c *fiber.Ctx) error {
+	// Get adopter_id from the URL
+	adopterID := c.Params("id")
+
+	// Fetch the adopter to check its current status
+	var adopter models.AdopterAccount
+	if err := middleware.DBConn.Where("adopter_id = ?", adopterID).First(&adopter).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"message": "Adopter not found",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Database error",
+			"error":   err.Error(),
+		})
+	}
+
+	// Check if the adopter is already active
+	if adopter.Status == "active" {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"message": "Adopter is already active",
+		})
+	}
+
+	// Check if the adopter is inactive
+	if adopter.Status != "inactive" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Adopter status is not inactive",
+		})
+	}
+
+	// Update the adopter's status to "active"
+	result := middleware.DBConn.Model(&models.AdopterAccount{}).
+		Where("adopter_id = ?", adopterID).
+		Update("status", "active")
+
+	// Check for errors during the update
+	if result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to activate adopter",
+			"error":   result.Error.Error(),
+		})
+	}
+
+	// Return success response
+	return c.JSON(fiber.Map{
+		"message": "Adopter activated successfully",
+		"data": fiber.Map{
+			"adopter_id": adopter.AdopterID,
+			"username":   adopter.Username,
+			"status":     "active",
+		},
+	})
+}

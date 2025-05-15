@@ -15,7 +15,7 @@ func AppRoutes(app *fiber.App) {
 	app.Post("/admin/register", controllers.RegisterAdmin)
 	app.Post("/admin/login", controllers.LoginAdmin)
 	app.Get("/admin/getallpendingrequest", controllers.GetAllPendingRequests)
-	app.Get("/admin/getalladopters", controllers.GetAllAdopters)
+	pethubRoutes.Get("/admin/getalladopters", controllers.GetAllAdopters)
 	app.Get("/admin/getallshelters", controllers.GetAllShelters)
 	app.Post("/admin/updateregstatus", controllers.UpdateRegistrationStatus)
 	app.Post("/admin/updateshelterstatus", controllers.UpdateShelterStatus)
@@ -30,6 +30,8 @@ func AppRoutes(app *fiber.App) {
 	app.Get("/admin/adoptedpets/count", controllers.CountAdoptedPets)
 	app.Get("/admin/pendingshelters/count", controllers.CountPendingShelters)
 	app.Get("/admin/approvedshelters/count", controllers.CountApprovedShelters)
+	pethubRoutes.Get("/admin/blockedadopters", controllers.GetInactiveAdopters)
+	pethubRoutes.Put("/admin/adopters/:id/activate", controllers.ActivateAdopter)
 
 	// ---------------- General Shared Routes ----------------
 	pethubRoutes.Get("/allshelter", controllers.GetShelter)
