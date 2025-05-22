@@ -2,6 +2,8 @@ package controllers
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"pethubadmin/middleware"
 	"pethubadmin/models"
 
@@ -287,37 +289,6 @@ func UpdateRegistrationStatus(c *fiber.Ctx) error {
 }
 
 // GetAllReports retrieves all submitted reports with filtering options
-func GetAllReports(c *fiber.Ctx) error {
-	// Get query parameters for filtering
-	shelterID := c.Query("shelter_id")
-	adopterID := c.Query("adopter_id")
-	status := c.Query("status")
-
-	query := middleware.DBConn.Model(&models.Report{})
-
-	// Apply filters if provided
-	if shelterID != "" {
-		query = query.Where("shelter_id = ?", shelterID)
-	}
-	if adopterID != "" {
-		query = query.Where("adopter_id = ?", adopterID)
-	}
-	if status != "" {
-		query = query.Where("status = ?", status)
-	}
-
-	var reports []models.Report
-	if err := query.Order("created_at DESC").Find(&reports).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to fetch reports",
-		})
-	}
-
-	return c.JSON(fiber.Map{
-		"count":   len(reports),
-		"reports": reports,
-	})
-}
 
 // UpdateReportStatus changes the status of a submitted report
 func UpdateReportStatus(c *fiber.Ctx) error {
@@ -340,7 +311,7 @@ func UpdateReportStatus(c *fiber.Ctx) error {
 	}
 
 	// Find the report
-	var report models.Report
+	var report models.SubmittedReport
 	if err := middleware.DBConn.First(&report, reportID).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"error": "Report not found",
@@ -811,5 +782,463 @@ func ActivateAdopter(c *fiber.Ctx) error {
 			"username":   adopter.Username,
 			"status":     "active",
 		},
+	})
+}
+
+func GetSubmittedReports(c *fiber.Ctx) error {
+	type ReportWithDetails struct {
+		models.SubmittedReport
+		ShelterInfo models.ShelterInfo `gorm:"foreignKey:ShelterID"`
+		Adopter     models.AdopterInfo `gorm:"foreignKey:AdopterID"`
+	}
+
+	var reports []ReportWithDetails
+
+	// Fetch only reports with status 'reported', preload related data
+	if err := middleware.DBConn.
+		Where("status = ?", "reported").
+		Preload("ShelterInfo").
+		Preload("Adopter").
+		Find(&reports).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch reports",
+			"error":   err.Error(),
+		})
+	}
+
+	// Group reports by shelter
+	sheltersMap := make(map[uint][]map[string]interface{})
+	for _, report := range reports {
+		shelterID := report.ShelterID
+		if shelterID == 0 {
+			continue
+		}
+
+		// Check shelter status before adding report
+		var shelterAccount models.ShelterAccount
+		if err := middleware.DBConn.Where("shelter_id = ? AND status = ?", shelterID, "active").First(&shelterAccount).Error; err != nil {
+			continue // Skip inactive or missing shelters
+		}
+
+		reportData := map[string]interface{}{
+			"reason":      report.Reason,
+			"description": report.Description,
+			"status":      report.Status,
+			"created_at":  report.CreatedAt,
+			"reported_by": map[string]interface{}{
+				"adopter_id":    report.AdopterID,
+				"adopter_name":  fmt.Sprintf("%s %s", report.Adopter.FirstName, report.Adopter.LastName),
+				"adopter_email": report.Adopter.Email,
+			},
+		}
+
+		sheltersMap[shelterID] = append(sheltersMap[shelterID], reportData)
+	}
+
+	// Prepare final response
+	var response []map[string]interface{}
+	for shelterID, reports := range sheltersMap {
+		var shelterInfo models.ShelterInfo
+		if err := middleware.DBConn.First(&shelterInfo, shelterID).Error; err != nil {
+			continue
+		}
+
+		var shelterAccount models.ShelterAccount
+		if err := middleware.DBConn.Where("shelter_id = ? AND status = ?", shelterID, "active").First(&shelterAccount).Error; err != nil {
+			continue
+		}
+
+		response = append(response, map[string]interface{}{
+			"shelter_id":     shelterID,
+			"shelter_name":   shelterInfo.ShelterName,
+			"shelter_email":  shelterInfo.ShelterEmail,
+			"shelter_status": shelterAccount.Status,
+			"total_reports":  len(reports),
+			"reports":        reports,
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"data": response,
+	})
+}
+
+func GetShelterPetCounts(c *fiber.Ctx) error {
+	type ShelterPetCount struct {
+		ShelterID       uint    `json:"shelter_id"`
+		ShelterName     string  `json:"shelter_name"`
+		TotalPets       int     `json:"total_pets"`
+		Cats            int     `json:"cats"`
+		Dogs            int     `json:"dogs"`
+		Vaccinated      int     `json:"vaccinated"`
+		Unvaccinated    int     `json:"unvaccinated"`
+		VaccinationRate float64 `json:"vaccination_rate"`
+	}
+
+	result := make([]ShelterPetCount, 0)
+
+	// 1. Get active and approved shelters
+	var shelters []models.ShelterAccount
+	if err := middleware.DBConn.
+		Where("status = ? AND reg_status = ?", "active", "approved").
+		Find(&shelters).
+		Error; err != nil {
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"message": "Shelter pet counts retrieved successfully",
+			"data":    result,
+		})
+	}
+
+	for _, shelter := range shelters {
+		// 2. Get shelter info
+		var shelterInfo models.ShelterInfo
+		if err := middleware.DBConn.
+			Where("shelter_id = ?", shelter.ShelterID).
+			First(&shelterInfo).
+			Error; err != nil {
+			continue
+		}
+
+		// 3. Get non-archived pets with media - using correct table name
+		var pets []models.PetInfo
+		if err := middleware.DBConn.
+			Table("petinfo"). // Explicit table name
+			Preload("PetMedia").
+			Where("shelter_id = ? AND status != ?", shelter.ShelterID, "archived").
+			Find(&pets).
+			Error; err != nil {
+			continue
+		}
+
+		// Count pets by type and vaccination status
+		counts := struct {
+			Total        int
+			Cats         int
+			Dogs         int
+			Vaccinated   int
+			Unvaccinated int
+		}{Total: len(pets)}
+
+		for _, pet := range pets {
+			// Count by pet type
+			petType := strings.ToLower(pet.PetType)
+			if petType == "cat" {
+				counts.Cats++
+			} else if petType == "dog" {
+				counts.Dogs++
+			}
+
+			// Count vaccination status
+			if pet.PetMedia.PetVaccine != "" && strings.TrimSpace(pet.PetMedia.PetVaccine) != "" {
+				counts.Vaccinated++
+			} else {
+				counts.Unvaccinated++
+			}
+		}
+
+		// Calculate vaccination rate
+		var rate float64
+		if counts.Total > 0 {
+			rate = float64(counts.Vaccinated) / float64(counts.Total) * 100
+		}
+
+		result = append(result, ShelterPetCount{
+			ShelterID:       shelter.ShelterID,
+			ShelterName:     shelterInfo.ShelterName,
+			TotalPets:       counts.Total,
+			Cats:            counts.Cats,
+			Dogs:            counts.Dogs,
+			Vaccinated:      counts.Vaccinated,
+			Unvaccinated:    counts.Unvaccinated,
+			VaccinationRate: math.Round(rate*100) / 100, // Round to 2 decimal places
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"message": "Shelter pet and vaccination counts retrieved successfully",
+		"data":    result,
+	})
+}
+
+func GetShelterVaccinationCounts(c *fiber.Ctx) error {
+	type ShelterVaccinationCount struct {
+		ShelterID       uint    `json:"shelter_id"`
+		ShelterName     string  `json:"shelter_name"`
+		Vaccinated      int     `json:"vaccinated"`
+		Unvaccinated    int     `json:"unvaccinated"`
+		VaccinationRate float64 `json:"vaccination_rate"`
+	}
+
+	result := make([]ShelterVaccinationCount, 0)
+
+	// Get active and approved shelters
+	var shelters []models.ShelterAccount
+	if err := middleware.DBConn.
+		Where("status = ? AND reg_status = ?", "active", "approved").
+		Find(&shelters).
+		Error; err != nil {
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"message": "Shelter vaccination counts retrieved successfully",
+			"data":    result,
+		})
+	}
+
+	for _, shelter := range shelters {
+		// Get shelter info
+		var shelterInfo models.ShelterInfo
+		if err := middleware.DBConn.
+			Where("shelter_id = ?", shelter.ShelterID).
+			First(&shelterInfo).
+			Error; err != nil {
+			continue
+		}
+
+		// Get non-archived pets with media - using explicit table name
+		var pets []models.PetInfo
+		if err := middleware.DBConn.
+			Table("petinfo"). // Explicit table name
+			Preload("PetMedia").
+			Where("shelter_id = ? AND status != ?", shelter.ShelterID, "archived").
+			Find(&pets).
+			Error; err != nil {
+			continue
+		}
+
+		// Count vaccination status
+		counts := struct {
+			Vaccinated   int
+			Unvaccinated int
+		}{}
+
+		for _, pet := range pets {
+			// Safely check PetMedia (in case Preload failed)
+			if pet.PetMedia.PetVaccine != "" && strings.TrimSpace(pet.PetMedia.PetVaccine) != "" {
+				counts.Vaccinated++
+			} else {
+				counts.Unvaccinated++
+			}
+		}
+
+		// Calculate vaccination rate
+		total := counts.Vaccinated + counts.Unvaccinated
+		var rate float64
+		if total > 0 {
+			rate = float64(counts.Vaccinated) / float64(total) * 100
+		}
+
+		result = append(result, ShelterVaccinationCount{
+			ShelterID:       shelter.ShelterID,
+			ShelterName:     shelterInfo.ShelterName,
+			Vaccinated:      counts.Vaccinated,
+			Unvaccinated:    counts.Unvaccinated,
+			VaccinationRate: math.Round(rate*100) / 100, // Round to 2 decimal places
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"message": "Shelter vaccination counts retrieved successfully",
+		"data":    result,
+	})
+}
+
+func UpdateShelterStatusByID(c *fiber.Ctx) error {
+	shelterID := c.Params("id")
+
+	id, err := strconv.ParseUint(shelterID, 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Invalid shelter ID",
+		})
+	}
+
+	// Check if shelter account exists
+	var shelterAccount models.ShelterAccount
+	if err := middleware.DBConn.Where("shelter_id = ?", uint(id)).First(&shelterAccount).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"message": "Shelter account not found",
+			"error":   err.Error(),
+		})
+	}
+
+	// Check if shelter info exists
+	var shelterInfo models.ShelterInfo
+	if err := middleware.DBConn.First(&shelterInfo, uint(id)).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"message": "Shelter info not found",
+			"error":   err.Error(),
+		})
+	}
+
+	// Update status in ShelterAccount
+	result := middleware.DBConn.Model(&models.ShelterAccount{}).
+		Where("shelter_id = ?", uint(id)).
+		Update("status", "inactive")
+
+	if result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to update shelter status",
+			"error":   result.Error.Error(),
+		})
+	}
+
+	// Ensure ALL reports with shelter_id and status 'reported' are updated to 'blocked'
+	reportUpdate := middleware.DBConn.Model(&models.SubmittedReport{}).
+		Where("shelter_id = ? AND status = ?", uint(id), "reported").
+		Updates(map[string]interface{}{"status": "blocked"})
+
+	if reportUpdate.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to update submitted reports status",
+			"error":   reportUpdate.Error.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"message":         "Shelter blocked successfully",
+		"shelter_id":      shelterAccount.ShelterID,
+		"shelter_name":    shelterInfo.ShelterName,
+		"shelter_email":   shelterInfo.ShelterEmail,
+		"shelter_status":  "inactive",
+		"reports_updated": reportUpdate.RowsAffected,
+	})
+}
+
+func GetBlockedShelters(c *fiber.Ctx) error {
+	type ReportWithDetails struct {
+		models.SubmittedReport
+		ShelterInfo models.ShelterInfo `gorm:"foreignKey:ShelterID"`
+		Adopter     models.AdopterInfo `gorm:"foreignKey:AdopterID"`
+	}
+
+	var reports []ReportWithDetails
+
+	// Fetch only reports with status 'reported', preload related data
+	if err := middleware.DBConn.
+		Where("status = ?", "blocked").
+		Preload("ShelterInfo").
+		Preload("Adopter").
+		Find(&reports).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch reports",
+			"error":   err.Error(),
+		})
+	}
+
+	// Group reports by shelter
+	sheltersMap := make(map[uint][]map[string]interface{})
+	for _, report := range reports {
+		shelterID := report.ShelterID
+		if shelterID == 0 {
+			continue
+		}
+
+		// Check shelter status before adding report
+		var shelterAccount models.ShelterAccount
+		if err := middleware.DBConn.Where("shelter_id = ? AND status = ?", shelterID, "inactive").First(&shelterAccount).Error; err != nil {
+			continue // Skip inactive or missing shelters
+		}
+
+		reportData := map[string]interface{}{
+			"reason":      report.Reason,
+			"description": report.Description,
+			"status":      report.Status,
+			"created_at":  report.CreatedAt,
+			"reported_by": map[string]interface{}{
+				"adopter_id":    report.AdopterID,
+				"adopter_name":  fmt.Sprintf("%s %s", report.Adopter.FirstName, report.Adopter.LastName),
+				"adopter_email": report.Adopter.Email,
+			},
+		}
+
+		sheltersMap[shelterID] = append(sheltersMap[shelterID], reportData)
+	}
+
+	// Prepare final response
+	var response []map[string]interface{}
+	for shelterID, reports := range sheltersMap {
+		var shelterInfo models.ShelterInfo
+		if err := middleware.DBConn.First(&shelterInfo, shelterID).Error; err != nil {
+			continue
+		}
+
+		var shelterAccount models.ShelterAccount
+		if err := middleware.DBConn.Where("shelter_id = ? AND status = ?", shelterID, "inactive").First(&shelterAccount).Error; err != nil {
+			continue
+		}
+
+		response = append(response, map[string]interface{}{
+			"shelter_id":     shelterID,
+			"shelter_name":   shelterInfo.ShelterName,
+			"shelter_email":  shelterInfo.ShelterEmail,
+			"shelter_status": shelterAccount.Status,
+			"total_reports":  len(reports),
+			"reports":        reports,
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"data": response,
+	})
+}
+
+func UpdateShelterStatusByIDtoactive(c *fiber.Ctx) error {
+	shelterID := c.Params("id")
+
+	id, err := strconv.ParseUint(shelterID, 10, 32)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Invalid shelter ID",
+		})
+	}
+
+	// Check if shelter account exists
+	var shelterAccount models.ShelterAccount
+	if err := middleware.DBConn.Where("shelter_id = ?", uint(id)).First(&shelterAccount).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"message": "Shelter account not found",
+			"error":   err.Error(),
+		})
+	}
+
+	// Check if shelter info exists
+	var shelterInfo models.ShelterInfo
+	if err := middleware.DBConn.First(&shelterInfo, uint(id)).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"message": "Shelter info not found",
+			"error":   err.Error(),
+		})
+	}
+
+	// Update status in ShelterAccount
+	result := middleware.DBConn.Model(&models.ShelterAccount{}).
+		Where("shelter_id = ?", uint(id)).
+		Update("status", "active")
+
+	if result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to update shelter status",
+			"error":   result.Error.Error(),
+		})
+	}
+
+	// Ensure ALL reports with shelter_id and status 'reported' are updated to 'blocked'
+	reportUpdate := middleware.DBConn.Model(&models.SubmittedReport{}).
+		Where("shelter_id = ? AND status = ?", uint(id), "blocked").
+		Updates(map[string]interface{}{"status": "resolved"})
+
+	if reportUpdate.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to update submitted reports status",
+			"error":   reportUpdate.Error.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"message":         "Shelter blocked successfully",
+		"shelter_id":      shelterAccount.ShelterID,
+		"shelter_name":    shelterInfo.ShelterName,
+		"shelter_email":   shelterInfo.ShelterEmail,
+		"shelter_status":  "active",
+		"reports_updated": reportUpdate.RowsAffected,
 	})
 }

@@ -19,19 +19,19 @@ func (ShelterAccount) TableName() string {
 }
 
 // ShelterInfo model (linked to existing "shelterinfo" table)
+
 type ShelterInfo struct {
-	ShelterID          uint   `gorm:"primaryKey;autoIncrement:false" json:"shelter_id"`
-	ShelterName        string `json:"shelter_name"`
-	ShelterAddress     string `json:"shelter_address"`
-	ShelterLandmark    string `json:"shelter_landmark"`
-	ShelterContact     string `json:"shelter_contact"`
-	ShelterEmail       string `json:"shelter_email"`
-	ShelterOwner       string `json:"shelter_owner"`
-	ShelterDescription string `json:"shelter_description"`
-	ShelterSocial      string `json:"shelter_social"`
+	ShelterID          uint   `gorm:"column:shelter_id;primaryKey;autoIncrement:false" json:"shelter_id"`
+	ShelterName        string `gorm:"column:shelter_name" json:"shelter_name"`
+	ShelterAddress     string `gorm:"column:shelter_address" json:"shelter_address"`
+	ShelterLandmark    string `gorm:"column:shelter_landmark" json:"shelter_landmark"`
+	ShelterContact     string `gorm:"column:shelter_contact" json:"shelter_contact"`
+	ShelterEmail       string `gorm:"column:shelter_email" json:"shelter_email"`
+	ShelterOwner       string `gorm:"column:shelter_owner" json:"shelter_owner"`
+	ShelterDescription string `gorm:"column:shelter_description" json:"shelter_description"`
+	ShelterSocial      string `gorm:"column:shelter_social" json:"shelter_social"`
 }
 
-// TableName overrides default table name
 func (ShelterInfo) TableName() string {
 	return "shelterinfo"
 }

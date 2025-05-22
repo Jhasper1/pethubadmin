@@ -19,20 +19,19 @@ func (AdopterAccount) TableName() string {
 
 // AdopterInfo model (linked to existing "adopterinfo" table)
 type AdopterInfo struct {
-	AdopterID     uint   `gorm:"primaryKey;autoIncrement:false" json:"adopter_id"`
-	FirstName     string `json:"first_name"`
-	LastName      string `json:"last_name"`
-	Age           int    `json:"age"`
-	Sex           string `json:"sex"`
-	Address       string `json:"address"`
-	ContactNumber string `json:"contact_number"`
-	Email         string `gorm:"unique" json:"email"`
-	Occupation    string `json:"occupation"`
-	CivilStatus   string `json:"civil_status"`
-	SocialMedia   string `json:"social_media"`
+	AdopterID     uint   `gorm:"column:adopter_id;primaryKey" json:"adopter_id"`
+	FirstName     string `gorm:"column:first_name" json:"first_name"`
+	LastName      string `gorm:"column:last_name" json:"last_name"`
+	Age           int    `gorm:"column:age" json:"age"`
+	Sex           string `gorm:"column:sex" json:"sex"`
+	Address       string `gorm:"column:address" json:"address"`
+	ContactNumber string `gorm:"column:contact_number" json:"contact_number"`
+	Email         string `gorm:"column:email" json:"email"`
+	Occupation    string `gorm:"column:occupation" json:"occupation"`
+	CivilStatus   string `gorm:"column:civil_status" json:"civil_status"`
+	SocialMedia   string `gorm:"column:social_media" json:"social_media"`
 }
 
-// TableName overrides default table name
 func (AdopterInfo) TableName() string {
 	return "adopterinfo"
 }

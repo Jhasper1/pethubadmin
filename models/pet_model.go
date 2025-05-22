@@ -23,8 +23,9 @@ func (PetInfo) TableName() string {
 }
 
 type PetMedia struct {
-	PetID     uint   `gorm:"not null" json:"pet_id"`
-	PetImage1 string `json:"pet_image1"` // Base64-encoded image
+	PetID      uint   `gorm:"not null" json:"pet_id"`
+	PetImage1  string `json:"pet_image1"` // Base64-encoded image
+	PetVaccine string `json:"pet_vaccine"`
 }
 
 func (PetMedia) TableName() string {
