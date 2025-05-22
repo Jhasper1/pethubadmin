@@ -6,6 +6,7 @@ import (
 	"math"
 	"pethubadmin/middleware"
 	"pethubadmin/models"
+	"time"
 
 	"pethubadmin/models/response"
 	"strconv"
@@ -786,75 +787,117 @@ func ActivateAdopter(c *fiber.Ctx) error {
 }
 
 func GetSubmittedReports(c *fiber.Ctx) error {
-	type ReportWithDetails struct {
-		models.SubmittedReport
-		ShelterInfo models.ShelterInfo `gorm:"foreignKey:ShelterID"`
-		Adopter     models.AdopterInfo `gorm:"foreignKey:AdopterID"`
+	// Response structures
+	type ReportedBy struct {
+		AdopterID    uint   `json:"adopter_id"`
+		AdopterName  string `json:"adopter_name"`
+		AdopterEmail string `json:"adopter_email"`
 	}
 
-	var reports []ReportWithDetails
+	type ReportDetail struct {
+		ID          uint       `json:"id"`
+		Reason      string     `json:"reason"`
+		Description string     `json:"description"`
+		Status      string     `json:"status"`
+		CreatedAt   string     `json:"created_at"` // Changed from time.Time to string
+		ReportedBy  ReportedBy `json:"reported_by"`
+	}
 
-	// Fetch only reports with status 'reported', preload related data
+	type ShelterReportResponse struct {
+		ShelterID      uint           `json:"shelter_id"`
+		ShelterName    string         `json:"shelter_name"`
+		ShelterEmail   string         `json:"shelter_email"`
+		ShelterStatus  string         `json:"shelter_status"`
+		ShelterProfile string         `json:"shelter_profile"`
+		TotalReports   int            `json:"total_reports"`
+		Reports        []ReportDetail `json:"reports"`
+	}
+
+	// Helper function to clean strings
+	cleanString := func(s string) string {
+		s = strings.ReplaceAll(s, "{", "")
+		s = strings.ReplaceAll(s, "}", "")
+		s = strings.ReplaceAll(s, "\"", "")
+		return strings.TrimSpace(s)
+	}
+
+	// Helper function to format time
+	formatTime := func(t time.Time) string {
+		return t.Format("01-02-2006 03:04 PM") // MM-DD-YYYY hh:mm AM/PM format
+	}
+
+	// Fetch reports with preloaded relationships
+	var submittedReports []models.SubmittedReport
 	if err := middleware.DBConn.
 		Where("status = ?", "reported").
-		Preload("ShelterInfo").
+		Preload("Shelter").
 		Preload("Adopter").
-		Find(&reports).Error; err != nil {
+		Find(&submittedReports).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to fetch reports",
 			"error":   err.Error(),
 		})
 	}
 
-	// Group reports by shelter
-	sheltersMap := make(map[uint][]map[string]interface{})
-	for _, report := range reports {
-		shelterID := report.ShelterID
-		if shelterID == 0 {
+	// Create a map to store shelter information
+	shelterInfoMap := make(map[uint]models.ShelterInfo)
+	shelterReportsMap := make(map[uint][]ReportDetail)
+
+	for _, report := range submittedReports {
+		// Skip if essential relationships are missing
+		if report.Shelter.ShelterID == 0 || report.Adopter.AdopterID == 0 {
 			continue
 		}
 
-		// Check shelter status before adding report
-		var shelterAccount models.ShelterAccount
-		if err := middleware.DBConn.Where("shelter_id = ? AND status = ?", shelterID, "active").First(&shelterAccount).Error; err != nil {
-			continue // Skip inactive or missing shelters
+		// Store shelter info if not already stored
+		if _, exists := shelterInfoMap[report.ShelterID]; !exists {
+			shelterInfoMap[report.ShelterID] = report.Shelter
 		}
 
-		reportData := map[string]interface{}{
-			"reason":      report.Reason,
-			"description": report.Description,
-			"status":      report.Status,
-			"created_at":  report.CreatedAt,
-			"reported_by": map[string]interface{}{
-				"adopter_id":    report.AdopterID,
-				"adopter_name":  fmt.Sprintf("%s %s", report.Adopter.FirstName, report.Adopter.LastName),
-				"adopter_email": report.Adopter.Email,
+		// Verify shelter is active
+		var shelterAccount models.ShelterAccount
+		if err := middleware.DBConn.
+			Where("shelter_id = ? AND status = ?", report.ShelterID, "active").
+			First(&shelterAccount).Error; err != nil {
+			continue
+		}
+
+		// Create report detail with cleaned strings and formatted time
+		detail := ReportDetail{
+			ID:          report.ID,
+			Reason:      cleanString(report.Reason),
+			Description: cleanString(report.Description),
+			Status:      report.Status,
+			CreatedAt:   formatTime(report.CreatedAt), // Format the time here
+			ReportedBy: ReportedBy{
+				AdopterID:    report.AdopterID,
+				AdopterName:  fmt.Sprintf("%s %s", report.Adopter.FirstName, report.Adopter.LastName),
+				AdopterEmail: report.Adopter.Email,
 			},
 		}
 
-		sheltersMap[shelterID] = append(sheltersMap[shelterID], reportData)
+		shelterReportsMap[report.ShelterID] = append(shelterReportsMap[report.ShelterID], detail)
 	}
 
 	// Prepare final response
-	var response []map[string]interface{}
-	for shelterID, reports := range sheltersMap {
-		var shelterInfo models.ShelterInfo
-		if err := middleware.DBConn.First(&shelterInfo, shelterID).Error; err != nil {
-			continue
-		}
+	var response []ShelterReportResponse
+	for shelterID, reports := range shelterReportsMap {
+		shelterInfo := shelterInfoMap[shelterID]
 
-		var shelterAccount models.ShelterAccount
-		if err := middleware.DBConn.Where("shelter_id = ? AND status = ?", shelterID, "active").First(&shelterAccount).Error; err != nil {
-			continue
-		}
+		// Get shelter profile image
+		var shelterMedia models.ShelterMedia
+		middleware.DBConn.
+			Where("shelter_id = ?", shelterID).
+			First(&shelterMedia)
 
-		response = append(response, map[string]interface{}{
-			"shelter_id":     shelterID,
-			"shelter_name":   shelterInfo.ShelterName,
-			"shelter_email":  shelterInfo.ShelterEmail,
-			"shelter_status": shelterAccount.Status,
-			"total_reports":  len(reports),
-			"reports":        reports,
+		response = append(response, ShelterReportResponse{
+			ShelterID:      shelterID,
+			ShelterName:    shelterInfo.ShelterName,
+			ShelterEmail:   shelterInfo.ShelterEmail,
+			ShelterStatus:  "active",
+			ShelterProfile: shelterMedia.ShelterProfile,
+			TotalReports:   len(reports),
+			Reports:        reports,
 		})
 	}
 
@@ -1104,75 +1147,117 @@ func UpdateShelterStatusByID(c *fiber.Ctx) error {
 }
 
 func GetBlockedShelters(c *fiber.Ctx) error {
-	type ReportWithDetails struct {
-		models.SubmittedReport
-		ShelterInfo models.ShelterInfo `gorm:"foreignKey:ShelterID"`
-		Adopter     models.AdopterInfo `gorm:"foreignKey:AdopterID"`
+	// Response structures
+	type ReportedBy struct {
+		AdopterID    uint   `json:"adopter_id"`
+		AdopterName  string `json:"adopter_name"`
+		AdopterEmail string `json:"adopter_email"`
 	}
 
-	var reports []ReportWithDetails
+	type ReportDetail struct {
+		ID          uint       `json:"id"`
+		Reason      string     `json:"reason"`
+		Description string     `json:"description"`
+		Status      string     `json:"status"`
+		CreatedAt   string     `json:"created_at"` // Changed from time.Time to string
+		ReportedBy  ReportedBy `json:"reported_by"`
+	}
 
-	// Fetch only reports with status 'reported', preload related data
+	type ShelterReportResponse struct {
+		ShelterID      uint           `json:"shelter_id"`
+		ShelterName    string         `json:"shelter_name"`
+		ShelterEmail   string         `json:"shelter_email"`
+		ShelterStatus  string         `json:"shelter_status"`
+		ShelterProfile string         `json:"shelter_profile"`
+		TotalReports   int            `json:"total_reports"`
+		Reports        []ReportDetail `json:"reports"`
+	}
+
+	// Helper function to clean strings
+	cleanString := func(s string) string {
+		s = strings.ReplaceAll(s, "{", "")
+		s = strings.ReplaceAll(s, "}", "")
+		s = strings.ReplaceAll(s, "\"", "")
+		return strings.TrimSpace(s)
+	}
+
+	// Helper function to format time
+	formatTime := func(t time.Time) string {
+		return t.Format("01-02-2006 03:04 PM") // MM-DD-YYYY hh:mm AM/PM format
+	}
+
+	// Fetch reports with preloaded relationships
+	var submittedReports []models.SubmittedReport
 	if err := middleware.DBConn.
 		Where("status = ?", "blocked").
-		Preload("ShelterInfo").
+		Preload("Shelter").
 		Preload("Adopter").
-		Find(&reports).Error; err != nil {
+		Find(&submittedReports).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to fetch reports",
 			"error":   err.Error(),
 		})
 	}
 
-	// Group reports by shelter
-	sheltersMap := make(map[uint][]map[string]interface{})
-	for _, report := range reports {
-		shelterID := report.ShelterID
-		if shelterID == 0 {
+	// Create a map to store shelter information
+	shelterInfoMap := make(map[uint]models.ShelterInfo)
+	shelterReportsMap := make(map[uint][]ReportDetail)
+
+	for _, report := range submittedReports {
+		// Skip if essential relationships are missing
+		if report.Shelter.ShelterID == 0 || report.Adopter.AdopterID == 0 {
 			continue
 		}
 
-		// Check shelter status before adding report
-		var shelterAccount models.ShelterAccount
-		if err := middleware.DBConn.Where("shelter_id = ? AND status = ?", shelterID, "inactive").First(&shelterAccount).Error; err != nil {
-			continue // Skip inactive or missing shelters
+		// Store shelter info if not already stored
+		if _, exists := shelterInfoMap[report.ShelterID]; !exists {
+			shelterInfoMap[report.ShelterID] = report.Shelter
 		}
 
-		reportData := map[string]interface{}{
-			"reason":      report.Reason,
-			"description": report.Description,
-			"status":      report.Status,
-			"created_at":  report.CreatedAt,
-			"reported_by": map[string]interface{}{
-				"adopter_id":    report.AdopterID,
-				"adopter_name":  fmt.Sprintf("%s %s", report.Adopter.FirstName, report.Adopter.LastName),
-				"adopter_email": report.Adopter.Email,
+		// Verify shelter is active
+		var shelterAccount models.ShelterAccount
+		if err := middleware.DBConn.
+			Where("shelter_id = ? AND status = ?", report.ShelterID, "inactive").
+			First(&shelterAccount).Error; err != nil {
+			continue
+		}
+
+		// Create report detail with cleaned strings and formatted time
+		detail := ReportDetail{
+			ID:          report.ID,
+			Reason:      cleanString(report.Reason),
+			Description: cleanString(report.Description),
+			Status:      report.Status,
+			CreatedAt:   formatTime(report.CreatedAt), // Format the time here
+			ReportedBy: ReportedBy{
+				AdopterID:    report.AdopterID,
+				AdopterName:  fmt.Sprintf("%s %s", report.Adopter.FirstName, report.Adopter.LastName),
+				AdopterEmail: report.Adopter.Email,
 			},
 		}
 
-		sheltersMap[shelterID] = append(sheltersMap[shelterID], reportData)
+		shelterReportsMap[report.ShelterID] = append(shelterReportsMap[report.ShelterID], detail)
 	}
 
 	// Prepare final response
-	var response []map[string]interface{}
-	for shelterID, reports := range sheltersMap {
-		var shelterInfo models.ShelterInfo
-		if err := middleware.DBConn.First(&shelterInfo, shelterID).Error; err != nil {
-			continue
-		}
+	var response []ShelterReportResponse
+	for shelterID, reports := range shelterReportsMap {
+		shelterInfo := shelterInfoMap[shelterID]
 
-		var shelterAccount models.ShelterAccount
-		if err := middleware.DBConn.Where("shelter_id = ? AND status = ?", shelterID, "inactive").First(&shelterAccount).Error; err != nil {
-			continue
-		}
+		// Get shelter profile image
+		var shelterMedia models.ShelterMedia
+		middleware.DBConn.
+			Where("shelter_id = ?", shelterID).
+			First(&shelterMedia)
 
-		response = append(response, map[string]interface{}{
-			"shelter_id":     shelterID,
-			"shelter_name":   shelterInfo.ShelterName,
-			"shelter_email":  shelterInfo.ShelterEmail,
-			"shelter_status": shelterAccount.Status,
-			"total_reports":  len(reports),
-			"reports":        reports,
+		response = append(response, ShelterReportResponse{
+			ShelterID:      shelterID,
+			ShelterName:    shelterInfo.ShelterName,
+			ShelterEmail:   shelterInfo.ShelterEmail,
+			ShelterStatus:  "inactive",
+			ShelterProfile: shelterMedia.ShelterProfile,
+			TotalReports:   len(reports),
+			Reports:        reports,
 		})
 	}
 
