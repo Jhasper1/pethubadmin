@@ -10,7 +10,8 @@ type ShelterAccount struct {
 	Status    string `gorm:"default:'active'" json:"status"` // Add this line
 	RegStatus string `json:"reg_status"`
 	CreatedAt time.Time
-	//Info      ShelterInfo `gorm:"foreignKey:ShelterID;constraint:OnDelete:CASCADE" json:"info"`
+
+	ShelterInfo ShelterInfo `gorm:"foreignKey:ShelterID" json:"shelterinfo"`
 }
 
 // TableName overrides default table name
@@ -19,19 +20,21 @@ func (ShelterAccount) TableName() string {
 }
 
 // ShelterInfo model (linked to existing "shelterinfo" table)
-
 type ShelterInfo struct {
-	ShelterID          uint   `gorm:"column:shelter_id;primaryKey;autoIncrement:false" json:"shelter_id"`
-	ShelterName        string `gorm:"column:shelter_name" json:"shelter_name"`
-	ShelterAddress     string `gorm:"column:shelter_address" json:"shelter_address"`
-	ShelterLandmark    string `gorm:"column:shelter_landmark" json:"shelter_landmark"`
-	ShelterContact     string `gorm:"column:shelter_contact" json:"shelter_contact"`
-	ShelterEmail       string `gorm:"column:shelter_email" json:"shelter_email"`
-	ShelterOwner       string `gorm:"column:shelter_owner" json:"shelter_owner"`
-	ShelterDescription string `gorm:"column:shelter_description" json:"shelter_description"`
-	ShelterSocial      string `gorm:"column:shelter_social" json:"shelter_social"`
+	ShelterID          uint   `gorm:"primaryKey;autoIncrement:false" json:"shelter_id"`
+	ShelterName        string `json:"shelter_name"`
+	ShelterAddress     string `json:"shelter_address"`
+	ShelterLandmark    string `json:"shelter_landmark"`
+	ShelterContact     string `json:"shelter_contact"`
+	ShelterEmail       string `json:"shelter_email"`
+	ShelterOwner       string `json:"shelter_owner"`
+	ShelterDescription string `json:"shelter_description"`
+	ShelterSocial      string `json:"shelter_social"`
+
+	ShelterMedia ShelterMedia `gorm:"foreignKey:ShelterID;references:ShelterID" json:"sheltermedia"`
 }
 
+// TableName overrides default table name
 func (ShelterInfo) TableName() string {
 	return "shelterinfo"
 }

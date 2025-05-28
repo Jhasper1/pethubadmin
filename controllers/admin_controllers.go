@@ -466,6 +466,49 @@ func GetAllSheltersAdmintry(c *fiber.Ctx) error {
 	})
 }
 
+func GetAllAdoptersAdmintry(c *fiber.Ctx) error {
+	var accounts []models.AdopterAccount
+	if err := middleware.DBConn.Find(&accounts).Error; err != nil {
+		return c.JSON(response.AdopterResponseModel{
+			RetCode: "400",
+			Message: "Failed to fetch adopter accounts",
+			Data:    nil,
+		})
+	}
+
+	var infos []models.AdopterInfo
+	if err := middleware.DBConn.Find(&infos).Error; err != nil {
+		return c.JSON(response.AdopterResponseModel{
+			RetCode: "400",
+			Message: "Failed to fetch adopter info",
+			Data:    nil,
+		})
+	}
+
+	// Create a map of ShelterID to ShelterInfo for faster lookup
+	infoMap := make(map[uint]models.AdopterInfo)
+	for _, info := range infos {
+		infoMap[info.AdopterID] = info
+	}
+
+	// Combine data
+	var combined []fiber.Map
+	for _, account := range accounts {
+		if info, ok := infoMap[account.AdopterID]; ok {
+			combined = append(combined, fiber.Map{
+				"adopter": account,
+				"info":    info,
+			})
+		}
+	}
+
+	return c.JSON(response.ShelterResponseModel{
+		RetCode: "200",
+		Message: "All adopters retrieved successfully",
+		Data:    combined,
+	})
+}
+
 func ApproveShelterRegStatus(c *fiber.Ctx) error {
 	// Get shelter_id from the URL
 	shelterID := c.Params("id")
@@ -604,8 +647,10 @@ func CountAdopters(c *fiber.Ctx) error {
 func CountPets(c *fiber.Ctx) error {
 	var count int64
 
-	// Count all pets
-	if err := middleware.DBConn.Model(&models.PetInfo{}).Count(&count).Error; err != nil {
+	// Count all pets except those with status "unavailable"
+	if err := middleware.DBConn.Model(&models.PetInfo{}).
+		Where("status != ?", "unavailable").
+		Count(&count).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to count pets",
 			"error":   err.Error(),
@@ -942,12 +987,12 @@ func GetShelterPetCounts(c *fiber.Ctx) error {
 			continue
 		}
 
-		// 3. Get non-archived pets with media - using correct table name
+		// 3. Get pets excluding "unavailable" status
 		var pets []models.PetInfo
 		if err := middleware.DBConn.
 			Table("petinfo"). // Explicit table name
 			Preload("PetMedia").
-			Where("shelter_id = ? AND status != ?", shelter.ShelterID, "archived").
+			Where("shelter_id = ? AND status NOT IN ?", shelter.ShelterID, []string{"unavailable"}).
 			Find(&pets).
 			Error; err != nil {
 			continue
@@ -1325,5 +1370,339 @@ func UpdateShelterStatusByIDtoactive(c *fiber.Ctx) error {
 		"shelter_email":   shelterInfo.ShelterEmail,
 		"shelter_status":  "active",
 		"reports_updated": reportUpdate.RowsAffected,
+	})
+}
+
+func GetAdopterInfoById(c *fiber.Ctx) error {
+	adopterID := c.Params("adopter_id")
+
+	// Validate adopter_id
+	if adopterID == "" {
+		return c.JSON(response.AdopterResponseModel{
+			RetCode: "400",
+			Message: "Adopter ID is required",
+			Data:    nil,
+		})
+	}
+
+	var adopterInfo models.AdopterInfo
+	infoResult := middleware.DBConn.Debug().
+		Where("adopter_id = ?", adopterID).
+		Preload("Adopter").
+		Preload("Adopter.AdopterMedia").
+		First(&adopterInfo)
+
+	if infoResult.Error != nil {
+		if errors.Is(infoResult.Error, gorm.ErrRecordNotFound) {
+			return c.JSON(response.AdopterResponseModel{
+				RetCode: "404",
+				Message: "No applications found for this adopter",
+				Data:    nil,
+			})
+		}
+		return c.JSON(response.AdopterResponseModel{
+			RetCode: "500",
+			Message: "Something went wrong",
+			Data:    nil,
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"message": "Adoption details retrieved successfully",
+		"data":    adopterInfo,
+	})
+}
+
+func GetAllNotifications(c *fiber.Ctx) error {
+	// Helper function to format time
+	formatTime := func(t time.Time) string {
+		return t.Format("01-02-2006 03:04 PM")
+	}
+
+	// Fetch all submitted reports with status "reported"
+	var submittedReports []models.SubmittedReport
+	if err := middleware.DBConn.
+		Where("status = ?", "reported").
+		Order("created_at DESC").
+		Preload("Shelter").
+		Preload("Adopter").
+		Find(&submittedReports).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch reports",
+			"error":   err.Error(),
+		})
+	}
+
+	// Extract each report as individual item
+	var reportNotifications []fiber.Map
+	for _, report := range submittedReports {
+		if report.Shelter.ShelterID == 0 || report.Adopter.AdopterID == 0 {
+			continue
+		}
+
+		reportNotifications = append(reportNotifications, fiber.Map{
+			"report_id":    report.ID,
+			"reason":       report.Reason,
+			"description":  report.Description,
+			"status":       report.Status,
+			"created_at":   formatTime(report.CreatedAt),
+			"adopter_id":   report.Adopter.AdopterID,
+			"first_name":   report.Adopter.FirstName,
+			"last_name":    report.Adopter.LastName,
+			"shelter_id":   report.Shelter.ShelterID,
+			"shelter_name": report.Shelter.ShelterName,
+		})
+	}
+
+	// Fetch shelters with reg_status = "pending"
+	var pendingShelters []models.ShelterAccount
+	if err := middleware.DBConn.
+		Where("reg_status = ?", "pending").
+		Order("created_at DESC").
+		Find(&pendingShelters).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch shelter signup notifications",
+			"error":   err.Error(),
+		})
+	}
+
+	// Fetch corresponding shelter info
+	var shelterInfos []models.ShelterInfo
+	if err := middleware.DBConn.
+		Where("shelter_id IN ?", getShelterIDs(pendingShelters)).
+		Find(&shelterInfos).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch shelter info",
+			"error":   err.Error(),
+		})
+	}
+
+	// Map shelter info by ShelterID for easy lookup
+	infoMap := make(map[uint]models.ShelterInfo)
+	for _, info := range shelterInfos {
+		infoMap[info.ShelterID] = info
+	}
+
+	// Prepare shelter notifications
+	var shelterNotifications []fiber.Map
+	for _, shelter := range pendingShelters {
+		if info, ok := infoMap[shelter.ShelterID]; ok {
+			shelterNotifications = append(shelterNotifications, fiber.Map{
+				"shelter_id":   shelter.ShelterID,
+				"shelter_name": shelter.Username,
+				"email":        shelter.ShelterInfo.ShelterEmail,
+				"created_at":   formatTime(shelter.CreatedAt),
+				"info":         info, // Include additional shelter info
+			})
+		}
+	}
+
+	// Combine both types of notifications
+	return c.JSON(fiber.Map{
+		"message":               "Notifications retrieved successfully",
+		"report_notifications":  reportNotifications,
+		"shelter_notifications": shelterNotifications,
+	})
+}
+
+// Helper function to extract ShelterIDs from ShelterAccount slice
+func getShelterIDs(shelters []models.ShelterAccount) []uint {
+	var ids []uint
+	for _, shelter := range shelters {
+		ids = append(ids, shelter.ShelterID)
+	}
+	return ids
+}
+
+// adoption history for shelter
+func GetApplicationsByShelterID(c *fiber.Ctx) error {
+	shelterID := c.Params("shelter_id")
+
+	if shelterID == "" {
+		return c.JSON(response.AdopterResponseModel{
+			RetCode: "400",
+			Message: "Shelter ID is required",
+			Data:    nil,
+		})
+	}
+
+	// Get shelter info and preload shelter media
+	var shelter models.ShelterInfo
+	shelterResult := middleware.DBConn.
+		Select("shelter_id", "shelter_name", "shelter_email", "shelter_contact", "shelter_address").
+		Preload("ShelterMedia", func(db *gorm.DB) *gorm.DB {
+			return db.Select("shelter_id", "shelter_profile")
+		}).
+		Where("shelter_id = ?", shelterID).
+		First(&shelter)
+
+	if shelterResult.Error != nil {
+		return c.JSON(response.AdopterResponseModel{
+			RetCode: "404",
+			Message: "Shelter not found",
+			Data:    nil,
+		})
+	}
+
+	// Get adoption submissions with only the needed related fields
+	var submissions []models.AdoptionSubmission
+	queryResult := middleware.DBConn.
+		Preload("Adopter", func(db *gorm.DB) *gorm.DB {
+			return db.Select("adopter_id", "first_name", "last_name")
+		}).
+		Preload("Pet", func(db *gorm.DB) *gorm.DB {
+			return db.Select("pet_id", "pet_name")
+		}).
+		Where("shelter_id = ?", shelterID).
+		Select("application_id", "adopter_id", "pet_id", "status", "created_at").
+		Find(&submissions)
+
+	if queryResult.Error != nil {
+		return c.JSON(response.AdopterResponseModel{
+			RetCode: "500",
+			Message: "Something went wrong retrieving adoption history",
+			Data:    nil,
+		})
+	}
+
+	// Format adoption history
+	var adoptionHistory []fiber.Map
+	for _, submission := range submissions {
+		adoptionHistory = append(adoptionHistory, fiber.Map{
+			"adopter_name": submission.Adopter.FirstName + " " + submission.Adopter.LastName,
+			"pet_name":     submission.Pet.PetName,
+			"status":       submission.Status,
+			"date":         submission.CreatedAt.Format("2006-01-02"),
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"message": "Adoption details retrieved successfully",
+		"data": fiber.Map{
+			"shelter": fiber.Map{
+				"name":    shelter.ShelterName,
+				"email":   shelter.ShelterEmail,
+				"contact": shelter.ShelterContact,
+				"address": shelter.ShelterAddress,
+				"profile": shelter.ShelterMedia.ShelterProfile,
+			},
+			"adoption_history": adoptionHistory,
+		},
+	})
+}
+
+func GetPetsByShelterID(c *fiber.Ctx) error {
+	shelterID := c.Params("shelter_id")
+
+	// Validate shelter_id
+	if shelterID == "" {
+		return c.JSON(fiber.Map{
+			"retCode": "400",
+			"message": "Shelter ID is required",
+			"data":    nil,
+		})
+	}
+
+	var pets []models.PetInfo
+	infoResult := middleware.DBConn.Debug().
+		Where("shelter_id = ?", shelterID).
+		Preload("PetMedia").
+		Find(&pets)
+
+	if infoResult.Error != nil {
+		if errors.Is(infoResult.Error, gorm.ErrRecordNotFound) {
+			return c.JSON(fiber.Map{
+				"retCode": "404",
+				"message": "No pets found for this shelter",
+				"data":    nil,
+			})
+		}
+		return c.JSON(fiber.Map{
+			"retCode": "500",
+			"message": "Something went wrong",
+			"data":    nil,
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"message": "Pets retrieved successfully",
+		"data":    pets,
+	})
+}
+
+// adoption history
+func GetApplicationsByAdopterID(c *fiber.Ctx) error {
+	adopterID := c.Params("adopter_id")
+
+	if adopterID == "" {
+		return c.JSON(response.AdopterResponseModel{
+			RetCode: "400",
+			Message: "Adopter ID is required",
+			Data:    nil,
+		})
+	}
+
+	// Get adopter info and preload adopter media
+	var adopter models.AdopterInfo
+	adopterResult := middleware.DBConn.
+		Select("adopter_id", "first_name", "last_name", "email", "contact_number", "address").
+		Preload("AdopterMedia", func(db *gorm.DB) *gorm.DB {
+			return db.Select("adopter_id", "adopter_profile")
+		}).
+		Where("adopter_id = ?", adopterID).
+		First(&adopter)
+
+	if adopterResult.Error != nil {
+		return c.JSON(response.AdopterResponseModel{
+			RetCode: "404",
+			Message: "Adopter not found",
+			Data:    nil,
+		})
+	}
+
+	// Get adoption submissions with only the needed related fields
+	var submissions []models.AdoptionSubmission
+	queryResult := middleware.DBConn.
+		Preload("Shelter", func(db *gorm.DB) *gorm.DB {
+			return db.Select("shelter_id", "shelter_name")
+		}).
+		Preload("Pet", func(db *gorm.DB) *gorm.DB {
+			return db.Select("pet_id", "pet_name")
+		}).
+		Where("adopter_id = ?", adopterID).
+		Select("application_id", "shelter_id", "pet_id", "status", "created_at").
+		Find(&submissions)
+
+	if queryResult.Error != nil {
+		return c.JSON(response.AdopterResponseModel{
+			RetCode: "500",
+			Message: "Something went wrong retrieving adoption history",
+			Data:    nil,
+		})
+	}
+
+	// Format adoption history
+	var adoptionHistory []fiber.Map
+	for _, submission := range submissions {
+		adoptionHistory = append(adoptionHistory, fiber.Map{
+			"shelter_name": submission.Shelter.ShelterName,
+			"pet_name":     submission.Pet.PetName,
+			"status":       submission.Status,
+			"date":         submission.CreatedAt.Format("2006-01-02"),
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"message": "Adoption details retrieved successfully",
+		"data": fiber.Map{
+			"adopter": fiber.Map{
+				"name":    adopter.FirstName + " " + adopter.LastName,
+				"email":   adopter.Email,
+				"contact": adopter.ContactNumber,
+				"address": adopter.Address,
+				"profile": adopter.AdopterMedia.AdopterProfile,
+			},
+			"adoption_history": adoptionHistory,
+		},
 	})
 }
